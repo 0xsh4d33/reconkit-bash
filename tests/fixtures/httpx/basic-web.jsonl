@@ -1,0 +1,2 @@
+{"url":"http://app.example.test:80","host":"app.example.test","port":80,"status_code":200,"title":"Admin Portal","tech":["nginx:1.24.0","React:18"]}
+{"url":"https://app.example.test:443","host":"192.0.2.10","port":443,"status_code":200,"title":"Secure Portal","technologies":["nginx"],"tech_versions":{"nginx":["1.24.0"]}}

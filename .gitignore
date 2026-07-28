@@ -1,0 +1,11 @@
+reports/
+logs/
+tmp/
+*.csv
+*.log
+*.tmp
+*.swp
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

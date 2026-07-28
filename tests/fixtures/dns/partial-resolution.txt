@@ -1,0 +1,4 @@
+default	app.example.test	ok	192.0.2.10	ipv4
+default	missing.example.test	unresolved		
+explicit	app.example.test	ok	198.51.100.10	ipv4
+explicit	missing.example.test	unresolved		

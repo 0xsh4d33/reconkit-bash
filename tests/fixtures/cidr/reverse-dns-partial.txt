@@ -1,0 +1,2 @@
+192.0.2.1 app.example.test
+192.0.2.2 partial.example.test

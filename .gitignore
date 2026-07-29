@@ -4,6 +4,9 @@ tmp/
 *.csv
 *.log
 *.tmp
+cidr-inventory.csv
+cidr-inventory.log
+cidr-scanner.*/*
 *.swp
 .DS_Store
 Thumbs.db

@@ -1,0 +1,3 @@
+cidr=10.10.0.0/16
+candidates=65534
+responsive=2

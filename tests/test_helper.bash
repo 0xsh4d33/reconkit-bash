@@ -5,3 +5,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 run_scanner() {
   (cd "$REPO_ROOT" && ./end-scanner.sh "$@")
 }
+
+run_cidr_scanner() {
+  (cd "$REPO_ROOT" && CIDR_SCANNER_SKIP_DEP_CHECK=1 ./cidr-scanner.sh "$@")
+}

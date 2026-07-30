@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Service Inventory Scanners
 
 `end-scanner.sh` resolves authorized subdomains, scans selected ports with `nmap`, probes web services with ProjectDiscovery `httpx`, and writes a review-ready CSV inventory.
@@ -118,3 +119,6 @@ Domain,IP,Port,Protocol,Service,Service Version,HTTP Status,HTTP Title,HTTP Tech
 ```
 
 See [specs/002-cidr-host-inventory/quickstart.md](specs/002-cidr-host-inventory/quickstart.md) and [specs/002-cidr-host-inventory/contracts/cli.md](specs/002-cidr-host-inventory/contracts/cli.md) for CIDR validation scenarios and the full CLI contract.
+=======
+start
+>>>>>>> b07daed897efdc300e58c5f9b37871078707c714

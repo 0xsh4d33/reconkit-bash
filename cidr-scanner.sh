@@ -20,6 +20,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/lib/nmap_parse.sh"
 # shellcheck source=lib/http_probe.sh
 . "$SCRIPT_DIR/lib/http_probe.sh"
+# shellcheck source=lib/printer_exclusion.sh
+. "$SCRIPT_DIR/lib/printer_exclusion.sh"
 
 CIDR_INPUT=""
 PORTS_INPUT=""
@@ -191,13 +193,15 @@ main() {
   check_dependencies
   parse_ports
 
-  local run_dir candidates_file discovery_xml responsive_file status_file reverse_file services_file web_file targets_file rows_file
-  local candidate_count responsive_count port_list ip domain xml_file service_line web_line matched
+  local run_dir candidates_file discovery_xml responsive_file status_file printer_excluded_file eligible_file reverse_file services_file web_file targets_file rows_file
+  local candidate_count responsive_count excluded_count eligible_count port_list ip domain xml_file service_line web_line matched
   run_dir="$(mktemp -d "$TMP_DIR/cidr-scanner.XXXXXX")" || fail 4 "could not create temporary directory"
   candidates_file="$run_dir/candidates.txt"
   discovery_xml="$run_dir/discovery.xml"
   responsive_file="$run_dir/responsive.txt"
   status_file="$run_dir/candidates-status.tsv"
+  printer_excluded_file="$run_dir/printer-excluded.txt"
+  eligible_file="$run_dir/eligible.txt"
   reverse_file="$run_dir/reverse.tsv"
   services_file="$run_dir/services.tsv"
   web_file="$run_dir/web.tsv"
@@ -220,11 +224,27 @@ main() {
   progress_stage_complete discovery "candidate_count=$candidate_count responsive_count=$responsive_count"
   ((responsive_count > 0)) || fail 3 "no responsive hosts were discovered"
 
-  progress_stage_start reverse_dns "responsive_count=$responsive_count"
-  reverse_dns_resolve_file "$responsive_file" "$reverse_file" "$HOST_TIMEOUT"
-  progress_stage_complete reverse_dns "responsive_count=$responsive_count"
+  progress_stage_start printer_exclusion "checked=$responsive_count"
+  printer_exclusion_detect "$responsive_file" "$printer_excluded_file" "$HOST_TIMEOUT"
+  printer_exclusion_filter_eligible "$responsive_file" "$printer_excluded_file" "$eligible_file"
+  excluded_count="$(wc -l < "$printer_excluded_file" | tr -d ' ')"
+  eligible_count="$(wc -l < "$eligible_file" | tr -d ' ')"
+  if ((excluded_count > 0)); then
+    while IFS= read -r ip; do
+      [[ -n "$ip" ]] || continue
+      log_info "stage=printer_exclusion excluded ip=$ip reason=\"open port 9100\""
+    done < "$printer_excluded_file"
+  else
+    log_info "stage=printer_exclusion no_exclusions_found"
+  fi
+  progress_stage_complete printer_exclusion "checked=$responsive_count excluded_count=$excluded_count eligible_count=$eligible_count"
+  ((eligible_count > 0)) || fail 3 "no eligible hosts remain after printer exclusion"
 
-  progress_stage_start service_scan "responsive_count=$responsive_count max_scan_jobs=$MAX_SCAN_JOBS"
+  progress_stage_start reverse_dns "responsive_count=$eligible_count"
+  reverse_dns_resolve_file "$eligible_file" "$reverse_file" "$HOST_TIMEOUT"
+  progress_stage_complete reverse_dns "responsive_count=$eligible_count"
+
+  progress_stage_start service_scan "responsive_count=$eligible_count max_scan_jobs=$MAX_SCAN_JOBS"
   port_list="$(join_ports)"
   while IFS= read -r ip; do
     [[ -n "$ip" ]] || continue
@@ -235,7 +255,7 @@ main() {
     else
       log_error "stage=service_scan scan failure ip=$ip"
     fi
-  done < "$responsive_file"
+  done < "$eligible_file"
   progress_stage_complete service_scan "service_rows=$(wc -l < "$services_file" | tr -d ' ')"
 
   progress_stage_start web_probe "max_probe_jobs=$MAX_PROBE_JOBS"
@@ -269,6 +289,11 @@ main() {
       printf '%s\t%s\t%s\t%s\t%s\t%s\t\t\t\t\n' "$domain" "$ip" "$port" "$protocol" "$service" "$version" >> "$rows_file"
     fi
   done < "$services_file"
+  if [[ -s "$printer_excluded_file" && -s "$rows_file" ]]; then
+    awk -F '\t' 'NR==FNR { excluded[$1]=1; next } !($2 in excluded)' \
+      "$printer_excluded_file" "$rows_file" > "$rows_file.filtered"
+    mv "$rows_file.filtered" "$rows_file"
+  fi
   write_cidr_report "$rows_file" || fail 4 "could not write CSV report: $OUTPUT_FILE"
   progress_stage_complete report "output=$OUTPUT_FILE rows=$(wc -l < "$rows_file" | tr -d ' ')"
 }

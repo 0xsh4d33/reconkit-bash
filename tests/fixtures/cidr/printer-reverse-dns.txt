@@ -1,0 +1,4 @@
+192.0.2.1 printer-a.example.test
+192.0.2.2 printer-b.example.test
+192.0.2.3 app.example.test
+

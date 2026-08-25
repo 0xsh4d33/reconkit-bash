@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 cidr_report.py — Parse a CIDR/network scan inventory CSV and generate
-a self-contained HTML report.
+a self-contained HTML report, then update a shared index.html.
 
 Usage:
     python3 cidr_report.py [input.csv] [output.html]
@@ -9,6 +9,9 @@ Usage:
 Defaults:
     input  → cidrinventory.csv
     output → cidr_report.html
+
+Each run also updates reports_index.json and index.html in the same
+directory as the output file so all reports are browseable from one page.
 
 CSV expected columns (order matters for auto-detect, but header names are used):
     Domain, IP, Port, Protocol, Service, Service Version,
@@ -18,6 +21,7 @@ CSV expected columns (order matters for auto-detect, but header names are used):
 import csv
 import sys
 import os
+import json
 import html
 from collections import defaultdict
 from datetime import datetime
@@ -527,6 +531,331 @@ def generate_html(rows, source_file):
     return "".join(parts)
 
 
+# ── Index maintenance ────────────────────────────────────────────────────────
+
+INDEX_JSON = "reports_index.json"
+INDEX_HTML = "index.html"
+
+INDEX_HEAD = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CIDR Reports Index</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg:      #0f1117;
+    --surface: #1a1d27;
+    --surface2:#22263a;
+    --border:  #2d3148;
+    --accent:  #5b8aff;
+    --accent2: #7c4dff;
+    --text:    #e2e8f0;
+    --muted:   #8892a4;
+    --green:   #34d399;
+    --cyan:    #22d3ee;
+    --purple:  #a78bfa;
+    --radius:  8px;
+    --shadow:  0 4px 24px rgba(0,0,0,.4);
+  }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg); color: var(--text);
+    min-height: 100vh; padding: 24px 16px 60px;
+  }
+  .container { max-width: 960px; margin: 0 auto; }
+
+  /* Header */
+  .page-header {
+    display: flex; align-items: center; justify-content: space-between;
+    flex-wrap: wrap; gap: 12px;
+    padding: 20px 28px;
+    background: linear-gradient(135deg, var(--surface) 0%, var(--surface2) 100%);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    margin-bottom: 24px; box-shadow: var(--shadow);
+  }
+  .page-header h1 {
+    font-size: 1.45rem; font-weight: 700; letter-spacing: -.3px;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .page-header .meta { font-size: .8rem; color: var(--muted); }
+
+  /* Search */
+  .search-row { display: flex; gap: 10px; margin-bottom: 20px; }
+  .search-row input {
+    flex: 1; padding: 10px 16px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); color: var(--text);
+    font-size: .9rem; outline: none; transition: border-color .2s;
+  }
+  .search-row input:focus { border-color: var(--accent); }
+  .search-row input::placeholder { color: var(--muted); }
+
+  /* Sort bar */
+  .sort-bar {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 16px; font-size: .8rem; color: var(--muted);
+  }
+  .sort-btn {
+    padding: 4px 12px; border-radius: 99px; cursor: pointer;
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--muted); font-size: .78rem; transition: all .15s;
+  }
+  .sort-btn:hover, .sort-btn.active {
+    border-color: var(--accent); color: var(--accent);
+    background: rgba(91,138,255,.08);
+  }
+
+  /* Report cards */
+  .report-grid { display: flex; flex-direction: column; gap: 12px; }
+  .report-card {
+    display: flex; align-items: stretch;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); overflow: hidden;
+    text-decoration: none; color: inherit;
+    transition: border-color .2s, box-shadow .2s, transform .15s;
+  }
+  .report-card:hover {
+    border-color: rgba(91,138,255,.5);
+    box-shadow: 0 0 0 1px rgba(91,138,255,.15), var(--shadow);
+    transform: translateY(-1px);
+  }
+  .card-accent {
+    width: 4px; flex-shrink: 0;
+    background: linear-gradient(180deg, var(--accent), var(--accent2));
+  }
+  .card-body {
+    flex: 1; padding: 16px 20px;
+    display: flex; align-items: center; justify-content: space-between;
+    flex-wrap: wrap; gap: 12px;
+  }
+  .card-left { min-width: 0; }
+  .card-title {
+    font-size: 1rem; font-weight: 700;
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    color: var(--cyan); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+    margin-bottom: 4px;
+  }
+  .card-source { font-size: .78rem; color: var(--muted); }
+  .card-ts { font-size: .75rem; color: var(--muted); margin-top: 2px; }
+  .card-stats {
+    display: flex; gap: 20px; flex-shrink: 0; flex-wrap: wrap;
+  }
+  .stat { text-align: center; }
+  .stat .val {
+    font-size: 1.35rem; font-weight: 800; line-height: 1;
+    background: linear-gradient(135deg, var(--accent), var(--cyan));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .stat .lbl {
+    font-size: .68rem; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .5px;
+  }
+  .card-arrow {
+    align-self: center; color: var(--muted); font-size: 1.1rem;
+    margin-left: 8px; transition: color .2s;
+  }
+  .report-card:hover .card-arrow { color: var(--accent); }
+
+  /* Services pill row on each card */
+  .card-pills { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+  .cpill {
+    font-size: .7rem; padding: 2px 8px; border-radius: 99px;
+    background: rgba(91,138,255,.1); color: var(--accent);
+    border: 1px solid rgba(91,138,255,.25); font-weight: 600;
+  }
+
+  /* Empty state */
+  .empty {
+    text-align: center; padding: 60px 20px; color: var(--muted); font-size: 1rem;
+  }
+
+  /* Footer */
+  .page-footer {
+    text-align: center; margin-top: 36px;
+    font-size: .78rem; color: var(--muted);
+  }
+</style>
+</head>
+<body>
+<div class="container">
+"""
+
+INDEX_FOOT = """\
+</div>
+<script>
+const cards   = [...document.querySelectorAll('.report-card')];
+const search  = document.getElementById('search');
+const noRes   = document.getElementById('no-results');
+
+// ── Search ─────────────────────────────────────────────────────────────────
+search.addEventListener('input', filter);
+function filter() {
+  const q = search.value.trim().toLowerCase();
+  cards.forEach(c => {
+    c.style.display = (!q || c.textContent.toLowerCase().includes(q)) ? '' : 'none';
+  });
+  noRes.style.display = cards.every(c => c.style.display === 'none') ? '' : 'none';
+}
+
+// ── Sort ───────────────────────────────────────────────────────────────────
+document.querySelectorAll('.sort-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.sort-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const key = btn.dataset.sort;
+    const grid = document.getElementById('report-grid');
+    const sorted = cards.slice().sort((a, b) => {
+      const av = a.dataset[key], bv = b.dataset[key];
+      if (key === 'ts') return bv.localeCompare(av);
+      return Number(bv) - Number(av);
+    });
+    sorted.forEach(c => grid.appendChild(c));
+    filter();
+  });
+});
+</script>
+</body>
+</html>
+"""
+
+
+def load_index(index_dir):
+    """Load existing reports_index.json or return empty list."""
+    path = os.path.join(index_dir, INDEX_JSON)
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_index(index_dir, entries):
+    path = os.path.join(index_dir, INDEX_JSON)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(entries, f, indent=2, ensure_ascii=False)
+
+
+def update_index_entry(entries, entry):
+    """Insert or replace entry by report filename."""
+    for i, ex in enumerate(entries):
+        if ex["file"] == entry["file"]:
+            entries[i] = entry
+            return entries
+    entries.insert(0, entry)
+    return entries
+
+
+def generate_index_html(entries, index_dir):
+    total = len(entries)
+    ts_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    parts = [INDEX_HEAD]
+
+    # Header
+    parts.append(f"""
+  <div class="page-header">
+    <div>
+      <h1>&#128202; CIDR Reports Index</h1>
+      <div class="meta">{total} report{'s' if total != 1 else ''} on record</div>
+    </div>
+    <div class="meta" style="text-align:right">Last updated<br><strong>{ts_now}</strong></div>
+  </div>
+""")
+
+    # Search + sort bar
+    parts.append("""
+  <div class="search-row">
+    <input id="search" type="text" placeholder="&#128269;  Filter by filename, source, services…">
+  </div>
+  <div class="sort-bar">
+    Sort by:
+    <button class="sort-btn active" data-sort="ts">Date ▾</button>
+    <button class="sort-btn" data-sort="ports">Ports ▾</button>
+    <button class="sort-btn" data-sort="ips">IPs ▾</button>
+  </div>
+  <div id="no-results" class="empty" style="display:none">No matching reports.</div>
+""")
+
+    # Cards
+    parts.append('  <div class="report-grid" id="report-grid">\n')
+
+    if not entries:
+        parts.append('    <div class="empty">No reports generated yet. Run cidr_report.py to get started.</div>\n')
+    else:
+        for en in entries:
+            fname      = e(en.get("file", ""))
+            src_name   = e(en.get("source", ""))
+            ts         = e(en.get("generated_at", ""))
+            n_ips      = en.get("unique_ips", 0)
+            n_ports    = en.get("total_ports", 0)
+            n_domains  = en.get("unique_domains", 0)
+            n_http     = en.get("http_endpoints", 0)
+            services   = en.get("services", {})
+            svc_pills  = "".join(
+                f'<span class="cpill">{e(s)}</span>'
+                for s in list(services.keys())[:6]
+            )
+            parts.append(f"""
+    <a class="report-card" href="{fname}"
+       data-ts="{ts}" data-ips="{n_ips}" data-ports="{n_ports}">
+      <div class="card-accent"></div>
+      <div class="card-body">
+        <div class="card-left">
+          <div class="card-title">&#128196; {fname}</div>
+          <div class="card-source">Source: {src_name}</div>
+          <div class="card-ts">Generated {ts}</div>
+          <div class="card-pills">{svc_pills}</div>
+        </div>
+        <div class="card-stats">
+          <div class="stat"><div class="val">{n_ips}</div><div class="lbl">IPs</div></div>
+          <div class="stat"><div class="val">{n_ports}</div><div class="lbl">Ports</div></div>
+          <div class="stat"><div class="val">{n_http}</div><div class="lbl">HTTP</div></div>
+          <div class="stat"><div class="val">{n_domains}</div><div class="lbl">Domains</div></div>
+        </div>
+        <div class="card-arrow">&#8250;</div>
+      </div>
+    </a>""")
+
+    parts.append("  </div>\n")
+    parts.append(f"""
+  <div class="page-footer">
+    cidr_report.py index &middot; {ts_now}
+  </div>
+""")
+    parts.append(INDEX_FOOT)
+    return "".join(parts)
+
+
+def write_index(rows, src, dest):
+    """Update reports_index.json and regenerate index.html."""
+    index_dir  = os.path.dirname(os.path.abspath(dest))
+    stats      = build_stats(rows)
+    entry = {
+        "file":            os.path.basename(dest),
+        "source":          os.path.basename(src),
+        "generated_at":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "unique_ips":      stats["unique_ips"],
+        "unique_domains":  stats["unique_domains"],
+        "total_ports":     stats["total_ports"],
+        "http_endpoints":  sum(stats["statuses"].values()),
+        "services":        stats["services"],
+    }
+    entries = load_index(index_dir)
+    entries = update_index_entry(entries, entry)
+    save_index(index_dir, entries)
+
+    index_html = generate_index_html(entries, index_dir)
+    idx_path   = os.path.join(index_dir, INDEX_HTML)
+    with open(idx_path, "w", encoding="utf-8") as f:
+        f.write(index_html)
+    return idx_path
+
+
 def main():
     src  = sys.argv[1] if len(sys.argv) > 1 else "cidrinventory.csv"
     dest = sys.argv[2] if len(sys.argv) > 2 else "cidr_report.html"
@@ -543,7 +872,11 @@ def main():
     with open(dest, "w", encoding="utf-8") as f:
         f.write(html_out)
 
-    print(f"[ok] Report written → {dest}  ({len(rows)} records, {len({r['ip'] for r in rows})} unique IPs)")
+    idx_path = write_index(rows, src, dest)
+
+    unique_ips = len({r["ip"] for r in rows})
+    print(f"[ok] Report  → {dest}  ({len(rows)} records, {unique_ips} unique IPs)")
+    print(f"[ok] Index   → {idx_path}")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,23 @@
+services:
+  reports:
+    image: nginx:alpine
+    container_name: cidr-reports
+    restart: unless-stopped
+    ports:
+      - "$127.0.0.1:${PORT:-8080}:80"
+    volumes:
+      # Mount the reports directory — new reports appear instantly, no rebuild needed.
+      # Change the left-hand path to wherever your .html files live.
+      - ./:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

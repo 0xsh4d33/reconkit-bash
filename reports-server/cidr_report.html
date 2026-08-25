@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CIDR Inventory Report</title>
+<style>
+  /* ── Reset & base ── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg:        #0f1117;
+    --surface:   #1a1d27;
+    --surface2:  #22263a;
+    --border:    #2d3148;
+    --accent:    #5b8aff;
+    --accent2:   #7c4dff;
+    --text:      #e2e8f0;
+    --muted:     #8892a4;
+    --green:     #34d399;
+    --yellow:    #fbbf24;
+    --red:       #f87171;
+    --purple:    #a78bfa;
+    --cyan:      #22d3ee;
+    --radius:    8px;
+    --shadow:    0 4px 24px rgba(0,0,0,.4);
+  }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 24px 16px 60px;
+  }
+
+  /* ── Layout ── */
+  .container { max-width: 1200px; margin: 0 auto; }
+
+  /* ── Header ── */
+  .page-header {
+    display: flex; align-items: center; justify-content: space-between;
+    flex-wrap: wrap; gap: 12px;
+    padding: 20px 28px;
+    background: linear-gradient(135deg, var(--surface) 0%, var(--surface2) 100%);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 24px;
+    box-shadow: var(--shadow);
+  }
+  .page-header h1 {
+    font-size: 1.45rem; font-weight: 700; letter-spacing: -.3px;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .page-header .meta { font-size: .8rem; color: var(--muted); }
+
+  /* ── Search bar ── */
+  .search-row {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 20px;
+  }
+  .search-row input {
+    flex: 1; padding: 10px 16px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); color: var(--text);
+    font-size: .9rem; outline: none; transition: border-color .2s;
+  }
+  .search-row input:focus { border-color: var(--accent); }
+  .search-row input::placeholder { color: var(--muted); }
+
+  /* ── Stat cards ── */
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 18px 20px;
+    text-align: center;
+    transition: border-color .2s;
+  }
+  .stat-card:hover { border-color: var(--accent); }
+  .stat-card .val {
+    font-size: 2rem; font-weight: 800; line-height: 1.1;
+    background: linear-gradient(135deg, var(--accent), var(--cyan));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .stat-card .lbl { font-size: .78rem; color: var(--muted); margin-top: 4px; text-transform: uppercase; letter-spacing: .6px; }
+
+  /* ── Service + Status pills ── */
+  .pills-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 24px; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 12px;
+    border-radius: 99px;
+    font-size: .78rem; font-weight: 600;
+    border: 1px solid transparent;
+  }
+  .pill-svc  { background: rgba(91,138,255,.12); border-color: rgba(91,138,255,.3); color: var(--accent); }
+  .pill-http { background: rgba(52,211,153,.1);  border-color: rgba(52,211,153,.3); color: var(--green); }
+  .pill-cnt  { background: rgba(255,255,255,.07); border-radius: 99px; padding: 2px 7px; font-size: .72rem; color: var(--muted); }
+
+  /* ── IP group cards ── */
+  .ip-group {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 16px;
+    overflow: hidden;
+    transition: border-color .2s;
+  }
+  .ip-group:hover { border-color: rgba(91,138,255,.4); }
+  .ip-group-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 20px;
+    background: var(--surface2);
+    cursor: pointer; user-select: none;
+    gap: 12px; flex-wrap: wrap;
+  }
+  .ip-group-header .ip-label {
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 1.05rem; font-weight: 700; color: var(--cyan);
+  }
+  .ip-group-header .domain-label {
+    font-size: .82rem; color: var(--muted); margin-left: 4px;
+  }
+  .ip-group-header .port-count {
+    font-size: .8rem; color: var(--muted);
+    background: rgba(255,255,255,.06); padding: 3px 10px; border-radius: 99px;
+  }
+  .toggle-icon { color: var(--muted); font-size: .9rem; transition: transform .2s; }
+  .ip-group.collapsed .toggle-icon { transform: rotate(-90deg); }
+  .ip-group.collapsed .ip-table-wrap { display: none; }
+
+  /* ── Port table ── */
+  .ip-table-wrap { overflow-x: auto; }
+  table {
+    width: 100%; border-collapse: collapse;
+    font-size: .85rem;
+  }
+  thead th {
+    padding: 10px 14px;
+    text-align: left;
+    font-size: .75rem; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .5px;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+    background: rgba(0,0,0,.15);
+  }
+  tbody tr { border-bottom: 1px solid rgba(45,49,72,.5); transition: background .15s; }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: rgba(91,138,255,.06); }
+  tbody td { padding: 10px 14px; vertical-align: middle; }
+
+  /* Port badge */
+  .port-badge {
+    display: inline-block;
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    font-size: .82rem; font-weight: 700;
+    padding: 3px 9px; border-radius: 6px;
+    background: rgba(124,77,255,.15); color: var(--purple);
+    border: 1px solid rgba(124,77,255,.25);
+  }
+  /* Protocol */
+  .proto-badge {
+    font-size: .72rem; font-weight: 600; text-transform: uppercase;
+    padding: 2px 8px; border-radius: 4px;
+    background: rgba(255,255,255,.06); color: var(--muted);
+    border: 1px solid var(--border);
+  }
+  /* Service */
+  .svc-http   { color: var(--green);  }
+  .svc-https  { color: var(--cyan);   }
+  .svc-ssh    { color: var(--yellow); }
+  .svc-ftp    { color: var(--purple); }
+  .svc-other  { color: var(--text);   }
+
+  /* HTTP status */
+  .status-badge {
+    display: inline-block; font-weight: 700; padding: 2px 9px;
+    border-radius: 6px; font-size: .82rem;
+  }
+  .status-2xx { background: rgba(52,211,153,.15); color: var(--green); border: 1px solid rgba(52,211,153,.3); }
+  .status-3xx { background: rgba(251,191,36,.12);  color: var(--yellow); border: 1px solid rgba(251,191,36,.3); }
+  .status-4xx { background: rgba(248,113,113,.12); color: var(--red);    border: 1px solid rgba(248,113,113,.3); }
+  .status-5xx { background: rgba(248,113,113,.2);  color: var(--red);    border: 1px solid rgba(248,113,113,.4); }
+  .status-none{ color: var(--muted); font-style: italic; font-size: .8rem; }
+
+  /* Tech */
+  .tech-tag {
+    display: inline-block; font-size: .75rem; padding: 2px 8px;
+    border-radius: 4px; border: 1px solid var(--border);
+    background: rgba(255,255,255,.04); color: var(--muted); margin-right: 4px;
+  }
+
+  /* no-data */
+  .no-results {
+    text-align: center; padding: 48px; color: var(--muted);
+    font-size: 1rem;
+  }
+
+  /* ── Footer ── */
+  .page-footer {
+    text-align: center; margin-top: 36px;
+    font-size: .78rem; color: var(--muted);
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="page-header">
+    <div>
+      <h1>&#128202; CIDR Inventory Report</h1>
+      <div class="meta">Source: <code>cidr-inventory.csv</code></div>
+    </div>
+    <div class="meta" style="text-align:right">
+      Generated<br><strong>2026-08-25 14:59:00</strong>
+    </div>
+  </div>
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="val">2</div>
+    <div class="lbl">Unique IPs</div>
+  </div>
+  <div class="stat-card">
+    <div class="val">0</div>
+    <div class="lbl">Domains</div>
+  </div>
+  <div class="stat-card">
+    <div class="val">3</div>
+    <div class="lbl">Open Ports</div>
+  </div>
+  <div class="stat-card">
+    <div class="val">3</div>
+    <div class="lbl">Services</div>
+  </div>
+  <div class="stat-card">
+    <div class="val">1</div>
+    <div class="lbl">HTTP Endpoints</div>
+  </div></div>
+<div class="pills-row"><span class="pill pill-svc">https<span class="pill-cnt">1</span></span><span class="pill pill-svc">http<span class="pill-cnt">1</span></span><span class="pill pill-svc">iphone-sync<span class="pill-cnt">1</span></span><span class="pill pill-http">HTTP 200<span class="pill-cnt">1</span></span></div>
+
+  <div class="search-row">
+    <input id="search" type="text" placeholder="&#128269;  Filter by IP, domain, port, service, title…">
+  </div>
+  <div id="no-results" class="no-results" style="display:none">No matching entries found.</div>
+
+  <div class="ip-group">
+    <div class="ip-group-header">
+      <div>
+        <span class="ip-label">192.168.1.1</span>
+        
+      </div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span class="port-count">2 ports</span>
+        <span class="toggle-icon">&#9660;</span>
+      </div>
+    </div>
+    <div class="ip-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Port</th>
+            <th>Proto</th>
+            <th>Service</th>
+            <th>Version</th>
+            <th>HTTP Status</th>
+            <th>Page Title</th>
+            <th>Technology</th>
+          </tr>
+        </thead>
+        <tbody>
+
+          <tr>
+            <td><span class="port-badge">80</span></td>
+            <td><span class="proto-badge">tcp</span></td>
+            <td><span class="svc-http">http</span></td>
+            <td style="color:var(--muted);font-size:.8rem">—</td>
+            <td><span class="status-badge status-2xx">200</span></td>
+            <td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">KeeneticOS Web Panel</td>
+            <td><span class="status-none">—</span></td>
+          </tr>
+          <tr>
+            <td><span class="port-badge">443</span></td>
+            <td><span class="proto-badge">tcp</span></td>
+            <td><span class="svc-https">https</span></td>
+            <td style="color:var(--muted);font-size:.8rem">—</td>
+            <td><span class="status-none">—</span></td>
+            <td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><span class="status-none">—</span></td>
+            <td><span class="status-none">—</span></td>
+          </tr>        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="ip-group">
+    <div class="ip-group-header">
+      <div>
+        <span class="ip-label">192.168.1.98</span>
+        
+      </div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span class="port-count">1 port</span>
+        <span class="toggle-icon">&#9660;</span>
+      </div>
+    </div>
+    <div class="ip-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Port</th>
+            <th>Proto</th>
+            <th>Service</th>
+            <th>Version</th>
+            <th>HTTP Status</th>
+            <th>Page Title</th>
+            <th>Technology</th>
+          </tr>
+        </thead>
+        <tbody>
+
+          <tr>
+            <td><span class="port-badge">62078</span></td>
+            <td><span class="proto-badge">tcp</span></td>
+            <td><span class="svc-other">iphone-sync</span></td>
+            <td style="color:var(--muted);font-size:.8rem">—</td>
+            <td><span class="status-none">—</span></td>
+            <td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><span class="status-none">—</span></td>
+            <td><span class="status-none">—</span></td>
+          </tr>        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="page-footer">
+    Generated by cidr_report.py &middot; 2026-08-25 14:59:00 &middot; 3 records
+  </div>
+</div>
+<script>
+// ── Collapse/expand IP groups ──────────────────────────────────────────────
+document.querySelectorAll('.ip-group-header').forEach(hdr => {
+  hdr.addEventListener('click', () => {
+    hdr.closest('.ip-group').classList.toggle('collapsed');
+  });
+});
+
+// ── Live search ────────────────────────────────────────────────────────────
+const searchInput = document.getElementById('search');
+const groups      = document.querySelectorAll('.ip-group');
+
+searchInput.addEventListener('input', () => {
+  const q = searchInput.value.trim().toLowerCase();
+  groups.forEach(grp => {
+    const text = grp.textContent.toLowerCase();
+    const match = !q || text.includes(q);
+    grp.style.display = match ? '' : 'none';
+    if (match && q) grp.classList.remove('collapsed');
+  });
+  document.getElementById('no-results').style.display =
+    [...groups].every(g => g.style.display === 'none') ? '' : 'none';
+});
+</script>
+</body>
+</html>

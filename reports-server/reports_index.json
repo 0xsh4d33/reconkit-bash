@@ -1,0 +1,16 @@
+[
+  {
+    "file": "cidr_report.html",
+    "source": "cidr-inventory.csv",
+    "generated_at": "2026-08-25 14:59:00",
+    "unique_ips": 2,
+    "unique_domains": 0,
+    "total_ports": 3,
+    "http_endpoints": 1,
+    "services": {
+      "https": 1,
+      "http": 1,
+      "iphone-sync": 1
+    }
+  }
+]

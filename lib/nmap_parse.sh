@@ -7,6 +7,7 @@ nmap_parse() {
   [[ -s "$xml_file" ]] || return 1
 
   if command -v xmlstarlet >/dev/null 2>&1; then
+    xmlstarlet val -q "$xml_file" || return 1
     xmlstarlet sel -t \
       -m "//port[state/@state='open']" \
       -v "@portid" -o $'\t' \
@@ -22,8 +23,9 @@ nmap_parse() {
         fi
         printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$domain" "$ip" "$port" "$protocol" "$service" "$version"
       done
-    return "${PIPESTATUS[0]}"
+    return 0
   fi
 
-  xmllint --xpath "//port[state/@state='open']" "$xml_file" >/dev/null 2>&1
+  xmllint --noout "$xml_file" >/dev/null 2>&1 || return 1
+  xmllint --xpath "//port[state/@state='open']" "$xml_file" >/dev/null 2>&1 || return 0
 }

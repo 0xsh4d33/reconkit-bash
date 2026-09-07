@@ -34,6 +34,7 @@ MAX_PROBE_JOBS=16
 HOST_TIMEOUT=3
 PROBE_TIMEOUT=5
 PORTS=()
+ACTIVE_SERVICE_PIDS=()
 
 usage() {
   cat <<'USAGE'
@@ -59,6 +60,10 @@ fail() {
 }
 
 on_interrupt() {
+  if ((${#ACTIVE_SERVICE_PIDS[@]} > 0)); then
+    kill "${ACTIVE_SERVICE_PIDS[@]}" 2>/dev/null || true
+    wait "${ACTIVE_SERVICE_PIDS[@]}" 2>/dev/null || true
+  fi
   log_error "interrupted by user"
   exit 130
 }
@@ -185,6 +190,66 @@ write_cidr_report() {
   } > "$OUTPUT_FILE"
 }
 
+safe_target_name() {
+  local value="$1"
+  printf '%s' "${value//[^A-Za-z0-9_.-]/_}"
+}
+
+service_scan_worker() {
+  local ip="$1" port_list="$2" reverse_file="$3" run_dir="$4" result_file="$5" timeout_value="$6"
+  local domain safe_ip xml_file
+
+  : > "$result_file"
+  domain="$(lookup_domain_for_ip "$ip" "$reverse_file")"
+  safe_ip="$(safe_target_name "$ip")"
+  xml_file="$run_dir/nmap-$safe_ip.xml"
+
+  if nmap_scan "$ip" "$port_list" "$xml_file" "$timeout_value"; then
+    nmap_parse "$domain" "$ip" "$xml_file" > "$result_file" 2>/dev/null || {
+      log_error "stage=service_scan parser failure ip=$ip"
+      : > "$result_file"
+    }
+  else
+    log_error "stage=service_scan scan failure ip=$ip"
+  fi
+}
+
+service_scan_wait_oldest() {
+  local oldest_pid
+
+  ((${#ACTIVE_SERVICE_PIDS[@]} > 0)) || return 0
+  oldest_pid="${ACTIVE_SERVICE_PIDS[0]}"
+  wait "$oldest_pid" || true
+  ACTIVE_SERVICE_PIDS=("${ACTIVE_SERVICE_PIDS[@]:1}")
+}
+
+service_scan_wait_for_capacity() {
+  local max_jobs="$1"
+
+  while ((${#ACTIVE_SERVICE_PIDS[@]} >= max_jobs)); do
+    service_scan_wait_oldest
+  done
+}
+
+service_scan_wait_all() {
+  while ((${#ACTIVE_SERVICE_PIDS[@]} > 0)); do
+    service_scan_wait_oldest
+  done
+}
+
+service_scan_merge_results() {
+  local eligible_file="$1" result_dir="$2" services_file="$3"
+  local ip safe_ip result_file
+
+  : > "$services_file"
+  while IFS= read -r ip; do
+    [[ -n "$ip" ]] || continue
+    safe_ip="$(safe_target_name "$ip")"
+    result_file="$result_dir/$safe_ip.tsv"
+    [[ -s "$result_file" ]] && cat "$result_file" >> "$services_file"
+  done < "$eligible_file"
+}
+
 main() {
   parse_args "$@"
   log_init "$LOG_FILE"
@@ -193,8 +258,8 @@ main() {
   check_dependencies
   parse_ports
 
-  local run_dir candidates_file discovery_xml responsive_file status_file printer_excluded_file eligible_file reverse_file services_file web_file targets_file rows_file
-  local candidate_count responsive_count excluded_count eligible_count port_list ip domain xml_file service_line web_line matched
+  local run_dir candidates_file discovery_xml responsive_file status_file printer_excluded_file eligible_file reverse_file services_file web_file targets_file rows_file service_result_dir
+  local candidate_count responsive_count excluded_count eligible_count port_list ip service_line web_line matched
   run_dir="$(mktemp -d "$TMP_DIR/cidr-scanner.XXXXXX")" || fail 4 "could not create temporary directory"
   candidates_file="$run_dir/candidates.txt"
   discovery_xml="$run_dir/discovery.xml"
@@ -204,9 +269,11 @@ main() {
   eligible_file="$run_dir/eligible.txt"
   reverse_file="$run_dir/reverse.tsv"
   services_file="$run_dir/services.tsv"
+  service_result_dir="$run_dir/service-results"
   web_file="$run_dir/web.tsv"
   targets_file="$run_dir/http-targets.txt"
   rows_file="$run_dir/report-rows.tsv"
+  mkdir -p "$service_result_dir" || fail 4 "could not create service result directory"
   : > "$services_file"; : > "$targets_file"; : > "$rows_file"
 
   progress_stage_start input "cidr=$CIDR_INPUT"
@@ -248,14 +315,12 @@ main() {
   port_list="$(join_ports)"
   while IFS= read -r ip; do
     [[ -n "$ip" ]] || continue
-    domain="$(lookup_domain_for_ip "$ip" "$reverse_file")"
-    xml_file="$run_dir/nmap-${ip//[^A-Za-z0-9_.-]/_}.xml"
-    if nmap_scan "$ip" "$port_list" "$xml_file" "$HOST_TIMEOUT"; then
-      nmap_parse "$domain" "$ip" "$xml_file" >> "$services_file" || log_error "stage=service_scan parser failure ip=$ip"
-    else
-      log_error "stage=service_scan scan failure ip=$ip"
-    fi
+    service_scan_wait_for_capacity "$MAX_SCAN_JOBS"
+    service_scan_worker "$ip" "$port_list" "$reverse_file" "$run_dir" "$service_result_dir/$(safe_target_name "$ip").tsv" "$HOST_TIMEOUT" &
+    ACTIVE_SERVICE_PIDS+=("$!")
   done < "$eligible_file"
+  service_scan_wait_all
+  service_scan_merge_results "$eligible_file" "$service_result_dir" "$services_file"
   progress_stage_complete service_scan "service_rows=$(wc -l < "$services_file" | tr -d ' ')"
 
   progress_stage_start web_probe "max_probe_jobs=$MAX_PROBE_JOBS"

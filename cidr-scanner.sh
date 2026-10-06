@@ -23,6 +23,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/printer_exclusion.sh
 . "$SCRIPT_DIR/lib/printer_exclusion.sh"
 
+. "$SCRIPT_DIR/lib/worker_pool.sh"
+. "$SCRIPT_DIR/lib/cidr_report.sh"
+
+MAX_DNS_JOBS=16
 CIDR_INPUT=""
 PORTS_INPUT=""
 OUTPUT_FILE=""
@@ -42,7 +46,8 @@ Usage: ./cidr-scanner.sh --cidr <cidr> --ports <ports|path> --output <path> [opt
 Options:
   --log <path>                    Write diagnostics to a log file instead of stderr
   --tmp-dir <path>                Directory for temporary discovery, scanner, and prober output
-  --max-discovery-jobs <count>    Maximum concurrent discovery work
+  --max-discovery-jobs <count>    Maximum addresses per discovery batch
+  --max-dns-jobs <count>          Maximum concurrent reverse DNS lookups (default 16)
   --max-scan-jobs <count>         Maximum concurrent service scan work
   --max-probe-jobs <count>        Maximum concurrent web probe work
   --host-timeout <seconds>        Per-host timeout for discovery/service stages
@@ -59,6 +64,7 @@ fail() {
 }
 
 on_interrupt() {
+  worker_pool_cancel
   log_error "interrupted by user"
   exit 130
 }
@@ -81,6 +87,7 @@ parse_args() {
       --log) (($# >= 2)) || fail 1 "--log requires a path"; LOG_FILE="$2"; shift 2 ;;
       --tmp-dir) (($# >= 2)) || fail 1 "--tmp-dir requires a path"; TMP_DIR="$2"; shift 2 ;;
       --max-discovery-jobs) (($# >= 2)) || fail 1 "--max-discovery-jobs requires a count"; MAX_DISCOVERY_JOBS="$2"; shift 2 ;;
+      --max-dns-jobs) (($# >= 2)) || fail 1 "--max-dns-jobs requires a count"; MAX_DNS_JOBS="$2"; shift 2 ;;
       --max-scan-jobs) (($# >= 2)) || fail 1 "--max-scan-jobs requires a count"; MAX_SCAN_JOBS="$2"; shift 2 ;;
       --max-probe-jobs) (($# >= 2)) || fail 1 "--max-probe-jobs requires a count"; MAX_PROBE_JOBS="$2"; shift 2 ;;
       --host-timeout) (($# >= 2)) || fail 1 "--host-timeout requires seconds"; HOST_TIMEOUT="$2"; shift 2 ;;
@@ -98,6 +105,7 @@ require_positive_integer() {
 
 validate_performance_controls() {
   require_positive_integer "--max-discovery-jobs" "$MAX_DISCOVERY_JOBS"
+  require_positive_integer "--max-dns-jobs" "$MAX_DNS_JOBS"
   require_positive_integer "--max-scan-jobs" "$MAX_SCAN_JOBS"
   require_positive_integer "--max-probe-jobs" "$MAX_PROBE_JOBS"
   require_positive_integer "--host-timeout" "$HOST_TIMEOUT"
@@ -166,11 +174,6 @@ join_ports() {
   printf '%s' "${PORTS[*]}"
 }
 
-lookup_domain_for_ip() {
-  local ip="$1" reverse_file="$2"
-  awk -F '\t' -v ip="$ip" '$1 == ip { print $2; exit }' "$reverse_file"
-}
-
 write_cidr_report() {
   local rows_file="$1"
   {
@@ -185,6 +188,16 @@ write_cidr_report() {
   } > "$OUTPUT_FILE"
 }
 
+cidr_scan_host() {
+  local ip="$1" ports="$2" directory="$3" seconds="$4"
+  local xml_file="$directory/nmap-$ip.xml"
+  if nmap_scan "$ip" "$ports" "$xml_file" "$seconds" 1 >&2; then
+    nmap_parse "${domains[$ip]-}" "$ip" "$xml_file" || log_error "stage=service_scan parser failure ip=$ip"
+  else
+    log_error "stage=service_scan scan failure ip=$ip"
+  fi
+}
+
 main() {
   parse_args "$@"
   log_init "$LOG_FILE"
@@ -194,7 +207,7 @@ main() {
   parse_ports
 
   local run_dir candidates_file discovery_xml responsive_file status_file printer_excluded_file eligible_file reverse_file services_file web_file targets_file rows_file
-  local candidate_count responsive_count excluded_count eligible_count port_list ip domain xml_file service_line web_line matched
+  local candidate_count responsive_count excluded_count eligible_count port_list ip domain
   run_dir="$(mktemp -d "$TMP_DIR/cidr-scanner.XXXXXX")" || fail 4 "could not create temporary directory"
   candidates_file="$run_dir/candidates.txt"
   discovery_xml="$run_dir/discovery.xml"
@@ -217,7 +230,7 @@ main() {
   ((candidate_count > 0)) || fail 3 "no valid candidate hosts"
 
   progress_stage_start discovery "cidr=$CIDR_INPUT max_discovery_jobs=$MAX_DISCOVERY_JOBS"
-  host_discovery_run "$CIDR_INPUT" "$discovery_xml" "$MAX_DISCOVERY_JOBS" "$HOST_TIMEOUT" || fail 4 "host discovery failed"
+  host_discovery_run "$CIDR_INPUT" "$discovery_xml" "$MAX_DISCOVERY_JOBS" "$HOST_TIMEOUT" "$candidates_file" || fail 4 "host discovery failed"
   host_discovery_parse_responsive "$discovery_xml" > "$responsive_file" || fail 4 "could not parse host discovery output"
   host_discovery_mark_candidates "$candidates_file" "$responsive_file" > "$status_file"
   responsive_count="$(wc -l < "$responsive_file" | tr -d ' ')"
@@ -225,7 +238,7 @@ main() {
   ((responsive_count > 0)) || fail 3 "no responsive hosts were discovered"
 
   progress_stage_start printer_exclusion "checked=$responsive_count"
-  printer_exclusion_detect "$responsive_file" "$printer_excluded_file" "$HOST_TIMEOUT"
+  printer_exclusion_detect "$responsive_file" "$printer_excluded_file" "$HOST_TIMEOUT" "$MAX_SCAN_JOBS" || fail 4 "printer worker failure"
   printer_exclusion_filter_eligible "$responsive_file" "$printer_excluded_file" "$eligible_file"
   excluded_count="$(wc -l < "$printer_excluded_file" | tr -d ' ')"
   eligible_count="$(wc -l < "$eligible_file" | tr -d ' ')"
@@ -241,31 +254,27 @@ main() {
   ((eligible_count > 0)) || fail 3 "no eligible hosts remain after printer exclusion"
 
   progress_stage_start reverse_dns "responsive_count=$eligible_count"
-  reverse_dns_resolve_file "$eligible_file" "$reverse_file" "$HOST_TIMEOUT"
+  reverse_dns_resolve_file "$eligible_file" "$reverse_file" "$HOST_TIMEOUT" "$MAX_DNS_JOBS" || fail 4 "DNS worker failure"
   progress_stage_complete reverse_dns "responsive_count=$eligible_count"
 
   progress_stage_start service_scan "responsive_count=$eligible_count max_scan_jobs=$MAX_SCAN_JOBS"
   port_list="$(join_ports)"
-  while IFS= read -r ip; do
-    [[ -n "$ip" ]] || continue
-    domain="$(lookup_domain_for_ip "$ip" "$reverse_file")"
-    xml_file="$run_dir/nmap-${ip//[^A-Za-z0-9_.-]/_}.xml"
-    if nmap_scan "$ip" "$port_list" "$xml_file" "$HOST_TIMEOUT"; then
-      nmap_parse "$domain" "$ip" "$xml_file" >> "$services_file" || log_error "stage=service_scan parser failure ip=$ip"
-    else
-      log_error "stage=service_scan scan failure ip=$ip"
-    fi
-  done < "$eligible_file"
+  local -A domains=()
+  while IFS=$'\t' read -r ip domain; do
+    [[ -n "$ip" ]] && domains["$ip"]="$domain"
+  done < "$reverse_file"
+  worker_pool_run "$eligible_file" "$MAX_SCAN_JOBS" "$run_dir/scan-workers" \
+    cidr_scan_host "$port_list" "$run_dir" "$HOST_TIMEOUT" > "$services_file" || fail 4 "service worker failure"
   progress_stage_complete service_scan "service_rows=$(wc -l < "$services_file" | tr -d ' ')"
 
   progress_stage_start web_probe "max_probe_jobs=$MAX_PROBE_JOBS"
   if [[ -s "$services_file" ]]; then
     awk -F '\t' '{ print "http://"$2":"$3; print "https://"$2":"$3 }' "$services_file" | sort -u > "$targets_file"
-    if http_probe "$targets_file" "$run_dir/httpx.jsonl" "$PROBE_TIMEOUT"; then
+    if http_probe "$targets_file" "$run_dir/httpx.jsonl" "$PROBE_TIMEOUT" "$MAX_PROBE_JOBS"; then
       http_probe_parse "$run_dir/httpx.jsonl" > "$web_file" || { log_error "stage=web_probe parser failure"; : > "$web_file"; }
     else
       log_error "stage=web_probe probe failure or timeout"
-      : > "$web_file"
+      http_probe_parse "$run_dir/httpx.jsonl" > "$web_file" || :
     fi
   else
     : > "$web_file"
@@ -273,22 +282,7 @@ main() {
   progress_stage_complete web_probe "web_rows=$(wc -l < "$web_file" | tr -d ' ')"
 
   progress_stage_start report "output=$OUTPUT_FILE"
-  while IFS= read -r service_line; do
-    service_line="${service_line//$'\t'/$'\x1f'}"
-    IFS=$'\x1f' read -r domain ip port protocol service version <<< "$service_line"
-    matched=0
-    while IFS= read -r web_line; do
-      web_line="${web_line//$'\t'/$'\x1f'}"
-      IFS=$'\x1f' read -r web_domain web_ip web_port status title tech tech_version <<< "$web_line"
-      if [[ ( "$web_domain" == "$ip" || "$web_domain" == "$domain" || "$web_ip" == "$ip" ) && "$web_port" == "$port" ]]; then
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$domain" "$ip" "$port" "$protocol" "$service" "$version" "$status" "$title" "$tech" "$tech_version" >> "$rows_file"
-        matched=1
-      fi
-    done < "$web_file"
-    if ((matched == 0)); then
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t\t\t\t\n' "$domain" "$ip" "$port" "$protocol" "$service" "$version" >> "$rows_file"
-    fi
-  done < "$services_file"
+  cidr_report_rows "$services_file" "$web_file" > "$rows_file" || fail 4 "report join failed"
   if [[ -s "$printer_excluded_file" && -s "$rows_file" ]]; then
     awk -F '\t' 'NR==FNR { excluded[$1]=1; next } !($2 in excluded)' \
       "$printer_excluded_file" "$rows_file" > "$rows_file.filtered"

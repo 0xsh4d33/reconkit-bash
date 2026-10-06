@@ -12,3 +12,4 @@ cidr-scanner.*/*
 Thumbs.db
 .vscode/
 .idea/
+.htpasswd

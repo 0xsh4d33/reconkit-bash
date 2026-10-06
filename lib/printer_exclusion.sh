@@ -17,7 +17,7 @@ printer_exclusion_probe_ip() {
     return 0
   fi
 
-  local cmd=(nmap -Pn --max-retries 1 -p 9100 -oG - "$ip")
+  local cmd=(nmap -n -Pn --max-retries 1 -p 9100 -oG - "$ip")
   if command -v timeout >/dev/null 2>&1; then
     if result="$(timeout "$timeout_value" "${cmd[@]}" 2>/dev/null)"; then
       [[ "$result" == *"9100/open"* ]] && printf 'open\n' || printf 'closed\n'
@@ -38,6 +38,12 @@ printer_exclusion_detect() {
   tmp_file="${excluded_file}.tmp"
   : > "$tmp_file"
 
+  if [[ -n "${4:-}" ]]; then
+    worker_pool_run "$responsive_file" "$4" "${excluded_file}.workers" printer_exclusion_worker "$timeout_value" > "$tmp_file" || return 1
+    sort -u "$tmp_file" > "$excluded_file"
+    rm -f "$tmp_file"
+    return 0
+  fi
   while IFS= read -r ip; do
     [[ -n "$ip" ]] || continue
     status="$(printer_exclusion_probe_ip "$ip" "$timeout_value")"
@@ -59,4 +65,14 @@ printer_exclusion_filter_eligible() {
   local responsive_file="$1" excluded_file="$2" eligible_file="$3"
   awk 'FILENAME == ARGV[1] { excluded[$1]=1; next } $1 != "" && !($1 in excluded) { print $1 }' \
     "$excluded_file" "$responsive_file" | sort -u > "$eligible_file"
+}
+
+printer_exclusion_worker() {
+  local ip="$1" status
+  status="$(printer_exclusion_probe_ip "$ip" "$2")"
+  case "$status" in
+    open) printf '%s\n' "$ip" ;;
+    failed|timeout) log_error "stage=printer_exclusion detection_failure ip=$ip status=$status" ;;
+  esac
+  return 0
 }

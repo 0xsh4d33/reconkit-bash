@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 
+declare -A PROGRESS_STARTED=()
+
 progress_stage_start() {
   local stage="$1"
   shift
+  PROGRESS_STARTED["$stage"]=$SECONDS
   log_info "stage=$stage status=start $*"
 }
 
 progress_stage_complete() {
   local stage="$1"
   shift
-  log_info "stage=$stage status=complete $*"
+  log_info "stage=$stage status=complete $* elapsed_seconds=$((SECONDS - ${PROGRESS_STARTED[$stage]:-$SECONDS}))"
 }
 
 progress_stage_error() {

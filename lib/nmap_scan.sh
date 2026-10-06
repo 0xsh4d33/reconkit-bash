@@ -12,6 +12,7 @@ nmap_scan() {
   fi
 
   local cmd=(nmap -Pn -open -p "$ports" -oX "$output" "$ip")
+  [[ "${5:-0}" == 1 ]] && cmd+=(-n)
   if [[ -n "$timeout_value" ]] && command -v timeout >/dev/null 2>&1; then
     timeout "$timeout_value" "${cmd[@]}"
   else

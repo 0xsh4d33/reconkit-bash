@@ -22,6 +22,10 @@ reverse_dns_lookup() {
 
 reverse_dns_resolve_file() {
   local ips_file="$1" output="$2" timeout_value="${3:-3}" ip name
+  if [[ -n "${4:-}" ]]; then
+    worker_pool_run "$ips_file" "$4" "${output}.workers" reverse_dns_worker "$timeout_value" > "$output"
+    return $?
+  fi
   : > "$output"
   while IFS= read -r ip; do
     [[ -n "$ip" ]] || continue
@@ -32,4 +36,14 @@ reverse_dns_resolve_file() {
       log_error "stage=reverse_dns unresolved ip=$ip"
     fi
   done < "$ips_file"
+}
+
+reverse_dns_worker() {
+  local ip="$1" name
+  if name="$(reverse_dns_lookup "$ip" "$2")"; then
+    printf '%s\t%s\n' "$ip" "$name"
+  else
+    printf '%s\t\n' "$ip"
+    log_error "stage=reverse_dns unresolved ip=$ip"
+  fi
 }

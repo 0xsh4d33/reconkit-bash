@@ -3,7 +3,9 @@
 # For day-to-day use prefer docker-compose.yml (volume mount, no rebuild needed).
 #
 # Build:  docker build -t cidr-reports .
-# Run:    docker run -p 8080:80 cidr-reports
+# Run:    docker run -p 8080:80 \
+#           -v "$PWD/.htpasswd:/etc/nginx/.htpasswd:ro" cidr-reports
+#         (credentials are mounted, never baked into the image)
 # ─────────────────────────────────────────────────────────────────────────────
 FROM nginx:alpine
 

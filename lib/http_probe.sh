@@ -11,6 +11,15 @@ http_probe() {
   fi
 
   local cmd=(httpx -silent -json -tech-detect -status-code -title -list "$targets_file" -o "$output")
+  if [[ -n "${4:-}" ]]; then
+    cmd+=(-threads "$4" -timeout "$timeout_value" -retries 0)
+    if declare -F worker_pool_command >/dev/null; then
+      worker_pool_command "${cmd[@]}"
+    else
+      "${cmd[@]}"
+    fi
+    return $?
+  fi
   if [[ -n "$timeout_value" ]] && command -v timeout >/dev/null 2>&1; then
     timeout "$timeout_value" "${cmd[@]}"
   else
@@ -21,7 +30,9 @@ http_probe() {
 http_probe_parse() {
   local jsonl="$1"
   [[ -s "$jsonl" ]] || return 0
-  jq -r '
+  jq -Rr '
+    select(test("\\S")) |
+    (try fromjson catch ("http_probe: skipped malformed JSON record" | debug | empty)) |
     def is_ip:
       test("^([0-9]{1,3}\\.){3}[0-9]{1,3}$") or test("^[0-9A-Fa-f:]+$");
     def host_from_url:

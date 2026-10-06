@@ -1,0 +1,16 @@
+192.0.2.1 host-1.example.test
+192.0.2.2 host-2.example.test
+192.0.2.3 host-3.example.test
+192.0.2.4 host-4.example.test
+192.0.2.5 host-5.example.test
+192.0.2.6 host-6.example.test
+192.0.2.7 host-7.example.test
+192.0.2.8 host-8.example.test
+192.0.2.9 host-9.example.test
+192.0.2.10 host-10.example.test
+192.0.2.11 host-11.example.test
+192.0.2.12 host-12.example.test
+192.0.2.13 host-13.example.test
+192.0.2.14 host-14.example.test
+192.0.2.15 host-15.example.test
+192.0.2.16 host-16.example.test

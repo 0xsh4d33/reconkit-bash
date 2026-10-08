@@ -23,6 +23,7 @@ import sys
 import os
 import json
 import html
+import re
 from collections import defaultdict
 from datetime import datetime
 
@@ -340,6 +341,13 @@ HTML_HEAD = """\
     background: rgba(255,255,255,.04); color: var(--muted); margin-right: 4px;
   }
 
+  .search-hint {
+    margin: -12px 0 20px; font-size: .75rem; color: var(--muted);
+  }
+  .search-hint code {
+    background: rgba(255,255,255,.06); padding: 1px 5px; border-radius: 4px;
+  }
+
   /* no-data */
   .no-results {
     text-align: center; padding: 48px; color: var(--muted);
@@ -368,19 +376,80 @@ document.querySelectorAll('.ip-group-header').forEach(hdr => {
 });
 
 // ── Live search ────────────────────────────────────────────────────────────
+// Space-separated terms, all must match a row. A term is either plain text
+// (matched against the row plus its IP/domain header) or a version query
+// like nginx<1.20 (matched against the row's data-sw [product, version] pairs).
 const searchInput = document.getElementById('search');
-const groups      = document.querySelectorAll('.ip-group');
+const groups      = [...document.querySelectorAll('.ip-group')].map(grp => ({
+  el:   grp,
+  rows: [...grp.querySelectorAll('tbody tr')].map(tr => ({
+    el:  tr,
+    hay: (grp.querySelector('.ip-group-header').textContent + ' ' + tr.textContent).toLowerCase(),
+    sw:  JSON.parse(tr.dataset.sw || '[]'),
+  })),
+}));
+const OPS = ['<=', '>=', '!=', '<', '>', '='];
+
+// "2.4.41-ubuntu" -> [2,4,41], "8.2p1" -> [8,2], "v1.2" -> [1,2], "" -> null
+function parseVer(v) {
+  v = (v || '').trim().toLowerCase();
+  if (v[0] === 'v') v = v.slice(1);
+  const out = [];
+  for (const part of v.split('.')) {
+    let n = '';
+    for (const ch of part) { if (ch >= '0' && ch <= '9') n += ch; else break; }
+    if (!n) break;
+    out.push(Number(n));
+    if (n.length < part.length) break;   // suffix ends the numeric part
+  }
+  return out.length ? out : null;
+}
+
+function cmpVer(a, b) {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const d = (a[i] || 0) - (b[i] || 0);
+    if (d) return d;
+  }
+  return 0;
+}
+
+function parseQuery(q) {
+  return q.toLowerCase().split(' ').filter(Boolean).map(tok => {
+    for (let i = 1; i < tok.length; i++) {
+      const op = OPS.find(o => tok.startsWith(o, i));
+      if (op) return { name: tok.slice(0, i), op, ver: parseVer(tok.slice(i + op.length)) };
+    }
+    return { text: tok };
+  });
+}
+
+function matches(term, row) {
+  if (term.text) return row.hay.includes(term.text);
+  return row.sw.some(([name, ver]) => {
+    if (!name.includes(term.name)) return false;
+    if (!term.ver) return true;            // still typing, e.g. "nginx<"
+    const v = parseVer(ver);
+    if (!v) return false;                  // unknown version never matches a comparison
+    const d = cmpVer(v, term.ver);
+    return { '<': d < 0, '<=': d <= 0, '>': d > 0, '>=': d >= 0, '=': d === 0, '!=': d !== 0 }[term.op];
+  });
+}
 
 searchInput.addEventListener('input', () => {
-  const q = searchInput.value.trim().toLowerCase();
+  const terms = parseQuery(searchInput.value.trim());
+  let anyShown = false;
   groups.forEach(grp => {
-    const text = grp.textContent.toLowerCase();
-    const match = !q || text.includes(q);
-    grp.style.display = match ? '' : 'none';
-    if (match && q) grp.classList.remove('collapsed');
+    let shown = 0;
+    grp.rows.forEach(row => {
+      const ok = terms.every(t => matches(t, row));
+      row.el.style.display = ok ? '' : 'none';
+      if (ok) shown++;
+    });
+    grp.el.style.display = shown ? '' : 'none';
+    if (shown && terms.length) grp.el.classList.remove('collapsed');
+    if (shown) anyShown = true;
   });
-  document.getElementById('no-results').style.display =
-    [...groups].every(g => g.style.display === 'none') ? '' : 'none';
+  document.getElementById('no-results').style.display = anyShown ? 'none' : '';
 });
 </script>
 </body>
@@ -415,6 +484,36 @@ def render_tech(tech, ver):
         for i, t in enumerate(parts)
     )
     return tags
+
+
+def software_pairs(r):
+    """Return [[product, version], ...] for version queries like nginx<1.20.
+
+    Sources: httpx tech list (Tech Version belongs to the first tech, or an
+    inline name:version), and nmap Service Version split at the first
+    version-looking token ("OpenSSH 8.2p1 Ubuntu" -> openssh / 8.2p1, also
+    indexed under the service name, e.g. ssh / 8.2p1).
+    """
+    pairs = []
+    techs = [t.strip() for t in r["http_tech"].split(",") if t.strip()]
+    for i, t in enumerate(techs):
+        name, _, ver = t.partition(":")
+        if not ver and i == 0:
+            ver = r["tech_version"]
+        pairs.append([name.strip().lower(), ver.strip()])
+
+    tokens = r["service_version"].split()
+    if tokens:
+        idx = next((i for i, tok in enumerate(tokens) if re.match(r"v?\d", tok, re.I)), None)
+        if idx is None:
+            pairs.append([" ".join(tokens).lower(), ""])
+        else:
+            ver = tokens[idx]
+            if idx:
+                pairs.append([" ".join(tokens[:idx]).lower(), ver])
+            if r["service"]:
+                pairs.append([r["service"].lower(), ver])
+    return pairs
 
 
 def generate_html(rows, source_file):
@@ -463,7 +562,12 @@ def generate_html(rows, source_file):
     # ── Search ──
     parts.append("""
   <div class="search-row">
-    <input id="search" type="text" placeholder="&#128269;  Filter by IP, domain, port, service, title…">
+    <input id="search" type="text" placeholder="&#128269;  Filter by IP, domain, port, service, title… or version: nginx&lt;1.20">
+  </div>
+  <div class="search-hint">
+    Version queries: <code>nginx&lt;1.20</code> <code>openssh&lt;=8.2</code> <code>apache&gt;=2.4</code>
+    &middot; operators <code>&lt; &lt;= &gt; &gt;= = !=</code>
+    &middot; space-separated terms must all match &middot; rows with unknown versions never match a comparison
   </div>
   <div id="no-results" class="no-results" style="display:none">No matching entries found.</div>
 """)
@@ -509,8 +613,9 @@ def generate_html(rows, source_file):
                 if r["http_status"]
                 else '<span class="status-none">—</span>'
             )
+            sw = e(json.dumps(software_pairs(r)))
             parts.append(f"""
-          <tr>
+          <tr data-sw="{sw}">
             <td><span class="port-badge">{e(r['port'])}</span></td>
             <td><span class="proto-badge">{e(r['protocol']) or '—'}</span></td>
             <td><span class="{svc_class(r['service'])}">{e(r['service']) or '—'}</span></td>

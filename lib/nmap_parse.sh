@@ -28,7 +28,6 @@ nmap_parse() {
     return 0
   fi
 
-<<<<<<< HEAD
   local count index base port protocol service product version
   count="$(xmllint --xpath "count(//port[state/@state='open'])" "$xml_file" 2>/dev/null)" || return 1
   for ((index=1; index<=count; index++)); do
@@ -41,8 +40,4 @@ nmap_parse() {
     [[ -n "$product" ]] && service="$service $product"
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$domain" "$ip" "$port" "$protocol" "$service" "$version"
   done
-=======
-  xmllint --noout "$xml_file" >/dev/null 2>&1 || return 1
-  xmllint --xpath "//port[state/@state='open']" "$xml_file" >/dev/null 2>&1 || return 0
->>>>>>> c3fdad31e7378322ab700caeee46de181de76e83
 }

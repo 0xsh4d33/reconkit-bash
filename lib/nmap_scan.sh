@@ -32,15 +32,11 @@ nmap_scan() {
     return $?
   fi
 
-<<<<<<< HEAD
-  local cmd=(nmap -Pn -open -p "$ports" -oX "$output" "$ip")
-  [[ "${5:-0}" == 1 ]] && cmd+=(-n)
-=======
   nmap_host_timeout="${timeout_value:-3}"
   outer_timeout="$((nmap_host_timeout + 10))"
 
   local cmd=(nmap -Pn -sV --version-light --max-retries 1 --host-timeout "${nmap_host_timeout}s" -T4 --open -p "$ports" -oX "$output" "$ip")
->>>>>>> c3fdad31e7378322ab700caeee46de181de76e83
+  [[ "${5:-0}" == 1 ]] && cmd+=(-n)
   if [[ -n "$timeout_value" ]] && command -v timeout >/dev/null 2>&1; then
     timeout "$outer_timeout" "${cmd[@]}"
   else
